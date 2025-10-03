@@ -9,8 +9,9 @@ import {
   doc,
   updateDoc,
   onSnapshot,
-  deleteDoc
-} from 'firebase/firestore';
+  deleteDoc,
+  getFirestore,
+} from "firebase/firestore";
 
 function App() {
   // Export table to Excel (must be inside App to access state)
