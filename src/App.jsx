@@ -329,13 +329,16 @@ function App() {
                               className="save-edit-btn"
                               disabled={isLocked}
                               onClick={async () => {
+                                // capture current editable values for this buyer before updating UI state
+                                const current = editable[b.buyer] || {};
+                                const payload = {
+                                  receivedAmount: current.receivedAmount || '',
+                                  paymentMode: current.paymentMode || '',
+                                  date: current.date || ''
+                                };
                                 // mark locked immediately in UI
                                 setEditable(ed => ({ ...ed, [b.buyer]: { ...ed[b.buyer], locked: true } }));
-                                await updateDoc(doc(db, 'buyers', b.buyer), {
-                                  receivedAmount: editable[b.buyer]?.receivedAmount || '',
-                                  paymentMode: editable[b.buyer]?.paymentMode || '',
-                                  date: editable[b.buyer]?.date || ''
-                                });
+                                await updateDoc(doc(db, 'buyers', b.buyer), payload);
                               }}
                             >
                               Save
