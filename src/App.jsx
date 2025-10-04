@@ -22,6 +22,7 @@ function App() {
       'SL No': idx + 1,
       'Buyer Name': b.buyer,
       'Place': b.place,
+      'Date': editable[b.buyer]?.date || '',
       'Total Qtls': b.totalQtls,
       'Commission Amount': b.commission.toFixed(2),
       'Received Amount': editable[b.buyer]?.receivedAmount || '',
@@ -39,6 +40,7 @@ function App() {
   const [buyerFilter, setBuyerFilter] = useState('');
   const [placeFilter, setPlaceFilter] = useState('');
   const [editable, setEditable] = useState({}); // {buyer: {receivedAmount, paymentMode, locked}}
+  const [detectedKeys, setDetectedKeys] = useState(null);
   // Load buyers from Firestore on mount and on change
   useEffect(() => {
     const unsub = onSnapshot(collection(db, 'buyers'), (snapshot) => {
@@ -50,6 +52,7 @@ function App() {
         editObj[d.buyer] = {
           receivedAmount: d.receivedAmount || '',
           paymentMode: d.paymentMode || '',
+          date: d.date || '',
           locked: false
         };
       });
@@ -88,25 +91,80 @@ function App() {
   // Save imported buyers to Firestore (overwrites existing)
   const processBuyers = async (rows) => {
     const buyersMap = {};
-    rows.forEach(row => {
-      const buyer = row['BUYER NAMER']?.toString().trim();
-      const qtls = parseFloat(row['qtls'] || 0);
-      const amount = parseFloat(row['Amount'] || 0);
-      const miller = (row['MILLER NAME'] || '').toString().toLowerCase();
-      const place = row['PLACE']?.toString().trim() || '';
-      if (!buyer) return;
-      if (!buyersMap[buyer]) {
-        buyersMap[buyer] = { buyer, totalQtls: 0, commission: 0, place };
+    if (!rows || rows.length === 0) return;
+
+    // Build header lookup from the first row (case-insensitive)
+    const firstRow = rows[0] || {};
+    const keys = Object.keys(firstRow);
+    const lowerKeys = keys.map(k => k.toLowerCase());
+
+    const findKey = (candidates, preferExact = false) => {
+      // preferExact: try exact match first (useful for PLACE since you insisted it's exact)
+      for (const cand of candidates) {
+        if (preferExact) {
+          const idxExact = lowerKeys.findIndex(k => k === cand);
+          if (idxExact !== -1) return keys[idxExact];
+        }
+        const idx = lowerKeys.findIndex(k => k.includes(cand));
+        if (idx !== -1) return keys[idx];
       }
+      return null;
+    };
+
+  const buyerKey = findKey(['buyer', 'buyer name', 'buyername', 'buyer namer']);
+    const qtlsKey = findKey(['qtls', 'qtl', 'qty', 'quantity']);
+    const amountKey = findKey(['amount', 'amt', 'price', 'total amount']);
+    const millerKey = findKey(['miller', 'miller name', 'seller', 'broker']);
+    // For PLACE the user said there's only one heading named PLACE, prefer exact
+    const placeKey = findKey(['place', 'location', 'city'], true) || findKey(['place', 'location', 'city']);
+
+  // Expose detected keys for debugging in the UI
+  try { setDetectedKeys({ buyerKey, qtlsKey, amountKey, millerKey, placeKey }); } catch (e) { /* ignore during tests */ }
+
+    const parseNumber = (val) => {
+      if (val === undefined || val === null || val === '') return NaN;
+      const s = String(val).replace(/[\s,\u20B9\$]/g, '').replace(/[()]/g, '');
+      const cleaned = s.replace(/[^0-9.\-]/g, '');
+      return parseFloat(cleaned);
+    };
+
+    const normalize = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+    rows.forEach(row => {
+      const buyer = buyerKey ? String(row[buyerKey] || '').trim() : '';
+      const qtls = qtlsKey ? parseNumber(row[qtlsKey]) : NaN;
+      const amount = amountKey ? parseNumber(row[amountKey]) : NaN;
+      const millerRaw = millerKey ? String(row[millerKey] || '') : '';
+      const miller = normalize(millerRaw);
+      const place = placeKey ? String(row[placeKey] || '').trim() : '';
+
+      if (!buyer) return; // skip rows without buyer
+
+      if (!buyersMap[buyer]) {
+        buyersMap[buyer] = { buyer, totalQtls: 0, commission: 0 };
+      }
+
       buyersMap[buyer].totalQtls += isNaN(qtls) ? 0 : qtls;
-      // Commission calculation
-      if (miller.includes('nidhiagros')) {
-        buyersMap[buyer].commission += isNaN(amount) ? 0 : amount * 0.01;
+
+      // Flexible matching for nidhi/nihi agros variants
+      const isNidhiAgros = (() => {
+        if (!miller) return false;
+        // check combinations like 'nidhi' + 'agro' in any order and tolerate typos like 'nihi'
+        if (/nidhi/.test(miller) && /agro/.test(miller)) return true;
+        if (/nihi/.test(miller) && /agro/.test(miller)) return true;
+        if (miller.includes('nidhiagros') || miller.includes('nihiagros') || miller.includes('nidhiagro')) return true;
+        return false;
+      })();
+
+      if (isNidhiAgros) {
+        buyersMap[buyer].commission += isNaN(amount) ? 0 : amount * 0.01; // 1% of amount
       } else {
         buyersMap[buyer].commission += isNaN(qtls) ? 0 : qtls * 11;
       }
+
       if (place) buyersMap[buyer].place = place;
     });
+
     // Save each buyer to Firestore (merge: true to keep manual fields)
     for (const b of Object.values(buyersMap)) {
       await setDoc(doc(db, 'buyers', b.buyer), b, { merge: true });
@@ -152,6 +210,17 @@ function App() {
       </div>
       {/* Debug info: show detected headers and preview rows */}
       <div style={{ marginTop: 20 }}>
+        {/* Debug panel */}
+        {detectedKeys && (
+          <div style={{ marginBottom: 12, padding: 8, border: '1px solid #ddd' }}>
+            <strong>Debug:</strong>
+            <div>Headers: {JSON.stringify(headers)}</div>
+            <div>Detected keys: {JSON.stringify(detectedKeys)}</div>
+            <div style={{ maxHeight: 120, overflow: 'auto' }}>Editable state preview: {JSON.stringify(Object.keys(editable).slice(0,10))}</div>
+            <div>Data rows preview (first 2): {JSON.stringify(data.slice(0,2))}</div>
+          </div>
+        )}
+
         {buyers.length > 0 && (
           <div>
             {/* Search and select for buyer name */}
@@ -202,6 +271,8 @@ function App() {
                     <th>Commission Amount</th>
                     <th>Received Amount</th>
                     <th>Chq/RTGS/Cash</th>
+                    <th>Date</th>
+                    <th>Action</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -241,6 +312,18 @@ function App() {
                             />
                           </td>
                           <td>
+                            <input
+                              type="date"
+                              style={{ width: 140 }}
+                              value={editable[b.buyer]?.date || ''}
+                              onChange={e => setEditable(ed => ({ ...ed, [b.buyer]: { ...ed[b.buyer], date: e.target.value } }))}
+                              disabled={isLocked}
+                              onBlur={async (e) => {
+                                await updateDoc(doc(db, 'buyers', b.buyer), { date: e.target.value });
+                              }}
+                            />
+                          </td>
+                          <td>
                             {isLocked ? (
                               <button 
                                 className="edit-btn"
@@ -255,7 +338,8 @@ function App() {
                                   setEditable(ed => ({ ...ed, [b.buyer]: { ...ed[b.buyer], locked: true } }));
                                   await updateDoc(doc(db, 'buyers', b.buyer), {
                                     receivedAmount: editable[b.buyer]?.receivedAmount || '',
-                                    paymentMode: editable[b.buyer]?.paymentMode || ''
+                                    paymentMode: editable[b.buyer]?.paymentMode || '',
+                                    date: editable[b.buyer]?.date || ''
                                   });
                                 }}
                               >
