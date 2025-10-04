@@ -22,7 +22,8 @@ function App() {
       'SL No': idx + 1,
       'Buyer Name': b.buyer,
       'Place': b.place,
-      'Date': editable[b.buyer]?.date || '',
+      // prefer DB stored date (dd/mm/yyyy), fall back to editable input converted to DB format
+      'Date': b.date || (editable[b.buyer]?.date ? toDbDate(editable[b.buyer].date) : ''),
       'Total Qtls': b.totalQtls,
       'Commission Amount': b.commission.toFixed(2),
       'Received Amount': editable[b.buyer]?.receivedAmount || '',
@@ -41,6 +42,31 @@ function App() {
   const [placeFilter, setPlaceFilter] = useState('');
   const [editable, setEditable] = useState({}); // {buyer: {receivedAmount, paymentMode, locked}}
   const [detectedKeys, setDetectedKeys] = useState(null);
+  // Date helpers: display (input) uses yyyy-mm-dd, DB should store dd/mm/yyyy per requirement
+  const toDbDate = (inputDate) => {
+    if (!inputDate) return '';
+    // if already in dd/mm/yyyy format, return as-is
+    if (inputDate.includes('/')) return inputDate;
+    // expect yyyy-mm-dd from <input type="date">
+    const parts = String(inputDate).split('-');
+    if (parts.length !== 3) return inputDate;
+    const [y, m, d] = parts;
+    return `${d}/${m}/${y}`;
+  };
+
+  const toInputDate = (dbDate) => {
+    if (!dbDate) return '';
+    // if already in yyyy-mm-dd format, return as-is
+    if (dbDate.includes('-')) return dbDate;
+    // expect dd/mm/yyyy in DB
+    const parts = String(dbDate).split('/');
+    if (parts.length !== 3) return dbDate;
+    const [d, m, y] = parts;
+    // pad to ensure two-digit month/day
+    const dd = d.padStart(2, '0');
+    const mm = m.padStart(2, '0');
+    return `${y}-${mm}-${dd}`;
+  };
   // Load buyers from Firestore on mount and on change
   useEffect(() => {
     const unsub = onSnapshot(collection(db, 'buyers'), (snapshot) => {
@@ -52,7 +78,8 @@ function App() {
         editObj[d.buyer] = {
           receivedAmount: d.receivedAmount || '',
           paymentMode: d.paymentMode || '',
-          date: d.date || '',
+          // convert DB date (dd/mm/yyyy) into input-friendly yyyy-mm-dd
+          date: toInputDate(d.date || ''),
           locked: false
         };
       });
@@ -319,7 +346,9 @@ function App() {
                               onChange={e => setEditable(ed => ({ ...ed, [b.buyer]: { ...ed[b.buyer], date: e.target.value } }))}
                               disabled={isLocked}
                               onBlur={async (e) => {
-                                await updateDoc(doc(db, 'buyers', b.buyer), { date: e.target.value });
+                                // convert to DB format (dd/mm/yyyy) when saving single-field onBlur
+                                const dbVal = toDbDate(e.target.value);
+                                await updateDoc(doc(db, 'buyers', b.buyer), { date: dbVal });
                               }}
                             />
                           </td>
@@ -334,7 +363,8 @@ function App() {
                                 const payload = {
                                   receivedAmount: current.receivedAmount || '',
                                   paymentMode: current.paymentMode || '',
-                                  date: current.date || ''
+                                  // convert input-format to DB format before persisting
+                                  date: toDbDate(current.date || '')
                                 };
                                 // mark locked immediately in UI
                                 setEditable(ed => ({ ...ed, [b.buyer]: { ...ed[b.buyer], locked: true } }));
