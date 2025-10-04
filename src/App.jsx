@@ -323,29 +323,32 @@ function App() {
                               }}
                             />
                           </td>
-                          <td>
-                            {isLocked ? (
-                              <button 
-                                className="edit-btn"
-                                onClick={() => setEditable(ed => ({ ...ed, [b.buyer]: { ...ed[b.buyer], locked: false } }))}
-                              >
-                                Edit
-                              </button>
-                            ) : (
-                              <button 
-                                className="save-edit-btn"
-                                onClick={async () => {
-                                  setEditable(ed => ({ ...ed, [b.buyer]: { ...ed[b.buyer], locked: true } }));
-                                  await updateDoc(doc(db, 'buyers', b.buyer), {
-                                    receivedAmount: editable[b.buyer]?.receivedAmount || '',
-                                    paymentMode: editable[b.buyer]?.paymentMode || '',
-                                    date: editable[b.buyer]?.date || ''
-                                  });
-                                }}
-                              >
-                                Save
-                              </button>
-                            )}
+                          <td style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                            {/* Save is always visible; disabled when the row is locked so user can see it */}
+                            <button
+                              className="save-edit-btn"
+                              disabled={isLocked}
+                              onClick={async () => {
+                                // mark locked immediately in UI
+                                setEditable(ed => ({ ...ed, [b.buyer]: { ...ed[b.buyer], locked: true } }));
+                                await updateDoc(doc(db, 'buyers', b.buyer), {
+                                  receivedAmount: editable[b.buyer]?.receivedAmount || '',
+                                  paymentMode: editable[b.buyer]?.paymentMode || '',
+                                  date: editable[b.buyer]?.date || ''
+                                });
+                              }}
+                            >
+                              Save
+                            </button>
+
+                            {/* Edit button shows when locked so user can unlock and edit again */}
+                            <button
+                              className="edit-btn"
+                              style={{ display: isLocked ? 'inline-block' : 'none' }}
+                              onClick={() => setEditable(ed => ({ ...ed, [b.buyer]: { ...ed[b.buyer], locked: false } }))}
+                            >
+                              Edit
+                            </button>
                           </td>
                         </tr>
                       );
