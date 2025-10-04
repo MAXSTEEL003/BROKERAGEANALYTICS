@@ -91,21 +91,21 @@ input[type="file"]:hover {
 }
 
 .filter-group select {
-  padding: 12px 16px;
+  padding: 8px 10px;
   border: 2px solid #e2e8f0;
-  border-radius: 10px;
-  font-size: 1rem;
+  border-radius: 8px;
+  font-size: 0.9rem;
   background: #fff;
   color: #2d3748;
-  min-width: 180px;
+  min-width: 140px;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: all 0.15s ease;
 }
 
 .filter-group select:focus {
   outline: none;
   border-color: #667eea;
-  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.08);
 }
 
 /* Table Container */
@@ -116,6 +116,7 @@ input[type="file"]:hover {
   box-shadow: 0 8px 32px rgba(0,0,0,0.1);
   backdrop-filter: blur(10px);
   overflow: hidden;
+  position: relative;
 }
 
 /* Buyer Table Professional Styles */
@@ -129,8 +130,9 @@ input[type="file"]:hover {
   box-shadow: 0 4px 20px rgba(0,0,0,0.08);
 }
 
+/* Make table compact: smaller paddings and font sizes to show more rows */
 .buyer-table th, .buyer-table td {
-  padding: 16px 20px;
+  padding: 8px 10px; /* reduced from 16px 20px */
   text-align: left;
   border-bottom: 1px solid #e2e8f0;
 }
@@ -139,7 +141,7 @@ input[type="file"]:hover {
   background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   color: #fff;
   font-weight: 600;
-  font-size: 0.95rem;
+  font-size: 0.8rem; /* slightly smaller */
   letter-spacing: 0.02em;
   text-transform: uppercase;
   position: sticky;
@@ -149,7 +151,7 @@ input[type="file"]:hover {
 
 .buyer-table tbody tr {
   background: #fff;
-  transition: all 0.2s ease;
+  transition: all 0.15s ease;
 }
 
 .buyer-table tbody tr:nth-child(even) {
@@ -157,45 +159,66 @@ input[type="file"]:hover {
 }
 
 .buyer-table tbody tr:hover {
-  background: rgba(102, 126, 234, 0.05);
-  transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+  background: rgba(102, 126, 234, 0.04);
+  transform: translateY(-0.5px);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.06);
 }
 
 .buyer-table td {
   color: #4a5568;
   font-weight: 500;
+  font-size: 0.86rem; /* smaller body font */
 }
 
 .buyer-table tr:last-child td {
   border-bottom: none;
 }
 
-/* Input Styles */
+/* Input Styles - compact */
 .buyer-table input[type="number"],
-.buyer-table input[type="text"] {
+.buyer-table input[type="text"],
+.buyer-table input[type="date"] {
   width: 100%;
-  padding: 8px 12px;
+  padding: 6px 8px; /* reduced */
   border: 2px solid #e2e8f0;
-  border-radius: 8px;
-  font-size: 0.9rem;
+  border-radius: 6px; /* slightly smaller */
+  font-size: 0.85rem; /* slightly smaller */
   font-weight: 500;
   color: #2d3748;
-  transition: all 0.2s ease;
+  transition: all 0.15s ease;
   background: #fff;
 }
 
 .buyer-table input[type="number"]:focus,
-.buyer-table input[type="text"]:focus {
+.buyer-table input[type="text"]:focus,
+.buyer-table input[type="date"]:focus {
   outline: none;
   border-color: #667eea;
-  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.08);
 }
 
 .buyer-table input:disabled {
   background: #f7fafc;
   color: #a0aec0;
   cursor: not-allowed;
+}
+
+/* Override browser date input appearance */
+.buyer-table input[type="date"]::-webkit-calendar-picker-indicator {
+  color: #2d3748;
+  cursor: pointer;
+  opacity: 0.6;
+  transition: all 0.2s ease;
+}
+
+.buyer-table input[type="date"]::-webkit-calendar-picker-indicator:hover {
+  opacity: 1;
+}
+
+/* Remove date input specific border in some browsers */
+.buyer-table input[type="date"] {
+  appearance: none;
+  -webkit-appearance: none;
 }
 
 /* Button Styles */
@@ -214,8 +237,8 @@ button {
 .save-edit-btn {
   background: linear-gradient(135deg, #48bb78 0%, #38a169 100%);
   color: #fff;
-  padding: 8px 16px;
-  font-size: 0.8rem;
+  padding: 6px 10px; /* smaller */
+  font-size: 0.75rem; /* smaller */
 }
 
 .save-edit-btn:hover {
@@ -226,8 +249,8 @@ button {
 .edit-btn {
   background: linear-gradient(135deg, #ed8936 0%, #dd6b20 100%);
   color: #fff;
-  padding: 8px 16px;
-  font-size: 0.8rem;
+  padding: 6px 10px; /* smaller */
+  font-size: 0.75rem; /* smaller */
 }
 
 .edit-btn:hover {
@@ -238,10 +261,10 @@ button {
 .export-btn {
   background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   color: #fff;
-  padding: 14px 28px;
-  font-size: 1rem;
-  margin-top: 24px;
-  box-shadow: 0 4px 16px rgba(102, 126, 234, 0.3);
+  padding: 10px 18px; /* reduced */
+  font-size: 0.9rem;
+  margin-top: 16px;
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.25);
 }
 
 .export-btn:hover {
@@ -255,8 +278,8 @@ button {
   font-weight: 700;
   border: none;
   border-radius: 8px;
-  padding: 14px 28px;
-  font-size: 1.1rem;
+  padding: 10px 18px; /* reduced */
+  font-size: 0.95rem;
   margin-bottom: 18px;
   margin-top: 8px;
   box-shadow: 0 4px 16px rgba(245, 101, 101, 0.2);
@@ -315,13 +338,20 @@ button {
   }
   
   .buyer-table th, .buyer-table td {
-    padding: 12px 16px;
-    font-size: 0.9rem;
+    padding: 6px 8px;
+    font-size: 0.82rem;
   }
   
   .buyer-table input[type="number"],
-  .buyer-table input[type="text"] {
+  .buyer-table input[type="text"],
+  .buyer-table input[type="date"] {
     font-size: 0.8rem;
+    padding: 6px 8px;
+  }
+  .save-edit-btn, .edit-btn {
+    min-width: 48px;
+    padding: 5px 8px;
+    font-size: 0.72rem;
   }
 }
 
@@ -382,18 +412,29 @@ button {
   background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);
   animation: shimmer 2s infinite;
   opacity: 0;
+  pointer-events: none;
+  z-index: 0;
 }
 
-@keyframes shimmer {
-  0% {
-    left: -100%;
-    opacity: 0;
-  }
-  50% {
-    opacity: 1;
-  }
-  100% {
-    left: 100%;
-    opacity: 0;
-  }
+/* Ensure table sits above the shimmer overlay so buttons remain visible/clickable */
+.table-container .buyer-table {
+  position: relative;
+  z-index: 1;
+}
+
+/* Make Save/Edit buttons clearly visible and prevent collapse */
+.save-edit-btn,
+.edit-btn {
+  display: inline-block;
+  min-width: 56px; /* smaller */
+  padding: 6px 10px;
+  font-size: 0.75rem; /* smaller */
+  text-align: center;
+  z-index: 2;
+  position: relative;
+}
+
+/* In case table cells are narrow on small screens, prevent button overflow from hiding text */
+.buyer-table td {
+  white-space: nowrap;
 }

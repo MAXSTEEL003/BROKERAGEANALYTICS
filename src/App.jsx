@@ -67,6 +67,27 @@ function App() {
     const mm = m.padStart(2, '0');
     return `${y}-${mm}-${dd}`;
   };
+
+  // Format qtls to avoid long recurring decimals. Behavior:
+  // - Integers show without decimals
+  // - If decimal part appears to be a repeating single digit (e.g. .333333 or .666666), show one decimal place (1.3, 1.6)
+  // - Otherwise show up to 2 decimal places, trimming trailing zeros
+  const formatQtls = (val) => {
+    if (val === undefined || val === null || val === '') return '';
+    const num = Number(val);
+    if (Number.isNaN(num)) return String(val);
+    if (Number.isInteger(num)) return String(num);
+    // Work with fixed 6 decimal places to detect repetition
+    const fixed = num.toFixed(6);
+    const [intPart, decPartRaw] = fixed.split('.');
+    const decPart = decPartRaw.replace(/0+$/,''); // trim trailing zeros
+    if (!decPart) return intPart;
+    // detect repeating same digit across the (trimmed) decimal part (length >=3)
+    const isRepeating = decPart.length >= 3 && /^([0-9])\1+$/.test(decPart);
+    if (isRepeating) return `${intPart}.${decPart[0]}`;
+    // otherwise, show up to 2 decimals (remove trailing zeros)
+    return parseFloat(String(num.toFixed(2))).toString();
+  };
   // Load buyers from Firestore on mount and on change
   useEffect(() => {
     const unsub = onSnapshot(collection(db, 'buyers'), (snapshot) => {
@@ -312,7 +333,7 @@ function App() {
                           <td>{idx + 1}</td>
                           <td>{b.buyer}</td>
                           <td>{b.place}</td>
-                          <td>{b.totalQtls}</td>
+                          <td>{formatQtls(b.totalQtls)}</td>
                           <td>{b.commission.toFixed(2)}</td>
                           <td>
                             <input
@@ -352,35 +373,28 @@ function App() {
                               }}
                             />
                           </td>
-                          <td style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                            {/* Save is always visible; disabled when the row is locked so user can see it */}
+                          <td>
                             <button
-                              className="save-edit-btn"
-                              disabled={isLocked}
+                              className={isLocked ? 'edit-btn' : 'save-edit-btn'}
                               onClick={async () => {
-                                // capture current editable values for this buyer before updating UI state
-                                const current = editable[b.buyer] || {};
-                                const payload = {
-                                  receivedAmount: current.receivedAmount || '',
-                                  paymentMode: current.paymentMode || '',
-                                  // convert input-format to DB format before persisting
-                                  date: toDbDate(current.date || '')
-                                };
-                                // mark locked immediately in UI
-                                setEditable(ed => ({ ...ed, [b.buyer]: { ...ed[b.buyer], locked: true } }));
-                                await updateDoc(doc(db, 'buyers', b.buyer), payload);
+                                if (!isLocked) {
+                                  // Save: capture current values and persist, then lock the row
+                                  const current = editable[b.buyer] || {};
+                                  const payload = {
+                                    receivedAmount: current.receivedAmount || '',
+                                    paymentMode: current.paymentMode || '',
+                                    date: toDbDate(current.date || '')
+                                  };
+                                  // mark locked immediately in UI so button becomes 'Edit'
+                                  setEditable(ed => ({ ...ed, [b.buyer]: { ...ed[b.buyer], locked: true } }));
+                                  await updateDoc(doc(db, 'buyers', b.buyer), payload);
+                                } else {
+                                  // Edit: unlock the row for editing
+                                  setEditable(ed => ({ ...ed, [b.buyer]: { ...ed[b.buyer], locked: false } }));
+                                }
                               }}
                             >
-                              Save
-                            </button>
-
-                            {/* Edit button shows when locked so user can unlock and edit again */}
-                            <button
-                              className="edit-btn"
-                              style={{ display: isLocked ? 'inline-block' : 'none' }}
-                              onClick={() => setEditable(ed => ({ ...ed, [b.buyer]: { ...ed[b.buyer], locked: false } }))}
-                            >
-                              Edit
+                              {isLocked ? 'Edit' : 'Save'}
                             </button>
                           </td>
                         </tr>
