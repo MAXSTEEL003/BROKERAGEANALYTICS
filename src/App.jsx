@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import * as XLSX from 'xlsx';
 import './App.css';
 import { db } from './firebase';
@@ -17,7 +18,7 @@ function App() {
   // Export table to Excel (must be inside App to access state)
   const handleExport = () => {
     const filtered = buyers
-      .filter(b => (!buyerFilter || b.buyer === buyerFilter) && (!placeFilter || b.place === placeFilter));
+      .filter(b => (!buyerFilter || b.buyer === buyerFilter) && (Array.isArray(placeFilter) ? (placeFilter.length === 0 || placeFilter.includes(b.place || '')) : (!placeFilter || b.place === placeFilter)));
     const exportData = filtered.map((b, idx) => ({
       'SL No': idx + 1,
       'Buyer Name': b.buyer,
@@ -39,7 +40,12 @@ function App() {
   const [error, setError] = useState('');
   const [headers, setHeaders] = useState([]);
   const [buyerFilter, setBuyerFilter] = useState('');
-  const [placeFilter, setPlaceFilter] = useState('');
+  const [placeFilter, setPlaceFilter] = useState([]);
+  const [placeDropdownOpen, setPlaceDropdownOpen] = useState(false);
+  const placeRef = useRef(null);
+  const placeToggleRef = useRef(null);
+  const portalMenuRef = useRef(null);
+  const [menuPos, setMenuPos] = useState({ top: 0, left: 0, width: 220 });
   const [editable, setEditable] = useState({}); // {buyer: {receivedAmount, paymentMode, locked}}
   const [detectedKeys, setDetectedKeys] = useState(null);
   // Date helpers: display (input) uses yyyy-mm-dd, DB should store dd/mm/yyyy per requirement
@@ -109,6 +115,36 @@ function App() {
     });
     return () => unsub();
   }, []);
+
+  // Close place dropdown when clicking outside
+  useEffect(() => {
+    const handler = (e) => {
+      // if click is inside the place container or the portal menu, don't close
+      const target = e.target;
+      if (placeRef.current && placeRef.current.contains(target)) return;
+      if (portalMenuRef.current && portalMenuRef.current.contains(target)) return;
+      setPlaceDropdownOpen(false);
+    };
+    document.addEventListener('click', handler);
+    return () => document.removeEventListener('click', handler);
+  }, []);
+
+  // update menu position when opening or on resize/scroll
+  useEffect(() => {
+    const updatePos = () => {
+      const btn = placeToggleRef.current;
+      if (!btn) return;
+      const rect = btn.getBoundingClientRect();
+      setMenuPos({ top: rect.bottom + window.scrollY + 8, left: rect.left + window.scrollX, width: Math.max(220, rect.width) });
+    };
+    if (placeDropdownOpen) updatePos();
+    window.addEventListener('resize', updatePos);
+    window.addEventListener('scroll', updatePos, true);
+    return () => {
+      window.removeEventListener('resize', updatePos);
+      window.removeEventListener('scroll', updatePos, true);
+    };
+  }, [placeDropdownOpen]);
 
   const handleFileUpload = (e) => {
     const file = e.target.files[0];
@@ -282,11 +318,11 @@ function App() {
                       const val = e.target.value;
                       setBuyerFilter(val);
                       if (val) {
-                        // Find the place for this buyer
+                        // Find the place for this buyer and select it (single selection becomes an array)
                         const found = buyers.find(b => b.buyer === val);
-                        if (found) setPlaceFilter(found.place || '');
+                        if (found) setPlaceFilter(found.place ? [found.place] : []);
                       } else {
-                        setPlaceFilter('');
+                        setPlaceFilter([]);
                       }
                     }}
                   >
@@ -296,14 +332,59 @@ function App() {
                     ))}
                   </select>
                 </div>
-                <div className="filter-group">
+                <div className="filter-group" ref={placeRef} style={{ position: 'relative' }}>
                   <label>Place</label>
-                  <select value={placeFilter} onChange={e => setPlaceFilter(e.target.value)}>
-                    <option value="">All</option>
-                    {[...new Set(buyers.map(b => b.place).filter(Boolean))].map(place => (
-                      <option key={place} value={place}>{place}</option>
-                    ))}
-                  </select>
+                  <div className="place-dropdown">
+                    <button ref={placeToggleRef} type="button" onClick={() => setPlaceDropdownOpen(open => !open)} className="place-dropdown-toggle">
+                      {placeFilter && placeFilter.length > 0 ? `${placeFilter.length} selected` : 'All'} ▾
+                    </button>
+                    <div style={{ marginTop: 6, fontSize: 12, color: '#333' }}>Selected: {placeFilter && placeFilter.length > 0 ? placeFilter.join(', ') : 'All'}</div>
+                    {placeDropdownOpen && createPortal(
+                      <div
+                        ref={portalMenuRef}
+                        className="place-dropdown-menu"
+                        style={{ position: 'absolute', top: menuPos.top, left: menuPos.left, width: menuPos.width, zIndex: 2147483647 }}
+                        onClick={e => e.stopPropagation()}
+                      >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                          <strong style={{ fontSize: 13 }}>Select places</strong>
+                          <button className="clear-btn" onClick={() => setPlaceFilter([])}>Clear</button>
+                        </div>
+                        <div style={{ marginBottom: 6 }}>
+                          <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <input
+                              type="checkbox"
+                              checked={placeFilter.length === 0}
+                              onChange={e => {
+                                if (e.target.checked) setPlaceFilter([]);
+                              }}
+                            />
+                            <span>All</span>
+                          </label>
+                        </div>
+                        {[...new Set(buyers.map(b => b.place).filter(Boolean))].map(place => (
+                          <div key={place} style={{ marginBottom: 6 }}>
+                            <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                              <input
+                                type="checkbox"
+                                value={place}
+                                checked={placeFilter.includes(place)}
+                                onChange={e => {
+                                  const checked = e.target.checked;
+                                  setPlaceFilter(prev => {
+                                    if (checked) return Array.from(new Set([...prev, place]));
+                                    return prev.filter(p => p !== place);
+                                  });
+                                }}
+                              />
+                              <span>{place}</span>
+                            </label>
+                          </div>
+                        ))}
+                      </div>,
+                      document.body
+                    )}
+                  </div>
                 </div>
               </div>
             </div>
@@ -325,7 +406,7 @@ function App() {
                 </thead>
                 <tbody>
                   {buyers
-                    .filter(b => (!buyerFilter || b.buyer === buyerFilter) && (!placeFilter || b.place === placeFilter))
+                    .filter(b => (!buyerFilter || b.buyer === buyerFilter) && (Array.isArray(placeFilter) ? (placeFilter.length === 0 || placeFilter.includes(b.place || '')) : (!placeFilter || b.place === placeFilter)))
                     .map((b, idx) => {
                       const isLocked = editable[b.buyer]?.locked;
                       return (
