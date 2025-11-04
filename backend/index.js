@@ -1,3 +1,5 @@
+/* eslint-env node */
+/* global process */
 import 'dotenv/config';
 import express from 'express';
 import mongoose from 'mongoose';
@@ -23,7 +25,8 @@ const buyerSchema = new mongoose.Schema({
   totalQtls: Number,
   commission: Number,
   receivedAmount: String,
-  paymentMode: String
+  paymentMode: String,
+  paymentDate: String
 }, { timestamps: true });
 
 const Buyer = mongoose.model('Buyer', buyerSchema);
@@ -63,10 +66,10 @@ app.post('/api/buyers', async (req, res) => {
 app.patch('/api/buyers/:buyer', async (req, res) => {
   try {
     const { buyer } = req.params;
-    const { receivedAmount, paymentMode } = req.body || {};
+    const { receivedAmount, paymentMode, paymentDate } = req.body || {};
     await Buyer.updateOne(
       { buyer },
-      { $set: { receivedAmount, paymentMode } }
+      { $set: { receivedAmount, paymentMode, paymentDate } }
     );
     res.json({ success: true });
   } catch (err) {

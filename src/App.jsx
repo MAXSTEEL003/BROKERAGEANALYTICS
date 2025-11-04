@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import * as XLSX from 'xlsx';
 import './App.css';
 import { db, auth } from './firebase';
@@ -10,13 +10,88 @@ import {
   updateDoc,
   onSnapshot,
   deleteDoc,
-  getFirestore,
 } from "firebase/firestore";
 import { getApp } from 'firebase/app';
 import { signInAnonymously } from 'firebase/auth';
 
 function App() {
   const apiUrl = import.meta.env.VITE_API_URL || '';
+  // Helper: format a Date using LOCAL timezone as YYYY-MM-DD (avoids UTC off-by-one)
+  const formatLocalYMD = (d) => {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${dd}`;
+  };
+
+  // Helper: normalize various date inputs into YYYY-MM-DD for <input type="date">
+  const toDateInputValue = (v) => {
+    if (!v) return '';
+    // Firestore Timestamp with toDate()
+    if (v && typeof v === 'object' && typeof v.toDate === 'function') {
+      const d = v.toDate();
+      return isNaN(d) ? '' : formatLocalYMD(d);
+    }
+    // Firestore Timestamp-like with seconds
+    if (v && typeof v === 'object' && 'seconds' in v) {
+      const d = new Date(v.seconds * 1000);
+      return isNaN(d) ? '' : formatLocalYMD(d);
+    }
+    // Native Date
+    if (v instanceof Date) {
+      return formatLocalYMD(v);
+    }
+    // String handling (try Y-M-D first, then D/M/Y or D-M-Y)
+    if (typeof v === 'string') {
+      const s = v.trim();
+      // Already YYYY-MM-DD or YYYY/MM/DD
+      const isoYMD = s.match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})$/);
+      if (isoYMD) {
+        const [_, yy, mm, dd] = isoYMD;
+        const d = new Date(Number(yy), Number(mm) - 1, Number(dd));
+        return isNaN(d) ? '' : formatLocalYMD(d);
+      }
+      // Day-first common formats (India default): D/M/Y or D-M-Y
+      const dmy = s.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{2,4})$/);
+      if (dmy) {
+        let [_, dd, mm, yy] = dmy;
+        if (yy.length === 2) yy = String(2000 + Number(yy));
+        const d = new Date(Number(yy), Number(mm) - 1, Number(dd));
+        return isNaN(d) ? '' : formatLocalYMD(d);
+      }
+      // Fallback parse; still render as local YMD if valid
+      const d = new Date(s);
+      return isNaN(d) ? '' : formatLocalYMD(d);
+    }
+    return '';
+  };
+  // Helper: format a Date using LOCAL timezone as DD/MM/YYYY (for display)
+  const formatLocalDMY = (d) => {
+    const dd = String(d.getDate()).padStart(2, '0');
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const y = d.getFullYear();
+    return `${dd}/${m}/${y}`;
+  };
+
+  // Display helper: any -> DD/MM/YYYY
+  const toDisplayDDMMYYYY = (v) => {
+    const ymd = toDateInputValue(v);
+    if (!ymd) return '';
+    const [y, m, d] = ymd.split('-');
+    return `${d}/${m}/${y}`;
+  };
+
+  // Parse DD/MM/YYYY -> YYYY-MM-DD (or '' if invalid)
+  const parseDDMMYYYY = (s) => {
+    if (!s) return '';
+    const m = String(s).trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+    if (!m) return '';
+    let [, dd, mm, yy] = m;
+    if (yy.length === 2) yy = String(2000 + Number(yy));
+    const d = new Date(Number(yy), Number(mm) - 1, Number(dd));
+    if (isNaN(d)) return '';
+    return formatLocalYMD(d);
+  };
   // Small helper to normalize row keys for robust header matching
   const normalizeRow = (row) => {
     const map = {};
@@ -46,20 +121,50 @@ function App() {
       'Total Qtls': b.totalQtls,
       'Commission Amount': b.commission.toFixed(2),
       'Received Amount': editable[b.buyer]?.receivedAmount || '',
-      'Chq/RTGS/Cash': editable[b.buyer]?.paymentMode || ''
+      'Chq/RTGS/Cash': editable[b.buyer]?.paymentMode || '',
+      'Date': toDisplayDDMMYYYY(editable[b.buyer]?.paymentDate || b.paymentDate || '')
     }));
     const ws = XLSX.utils.json_to_sheet(exportData);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Buyers');
     XLSX.writeFile(wb, 'buyers_summary.xlsx');
   };
-  const [data, setData] = useState([]);
   const [buyers, setBuyers] = useState([]);
   const [error, setError] = useState('');
-  const [headers, setHeaders] = useState([]);
   const [buyerFilter, setBuyerFilter] = useState('');
   const [placeFilter, setPlaceFilter] = useState('');
-  const [editable, setEditable] = useState({}); // {buyer: {receivedAmount, paymentMode, locked}}
+  const [editable, setEditable] = useState({}); // {buyer: {receivedAmount, paymentMode, paymentDate, locked}}
+  // Backend fallback loader
+  const loadFromBackend = useCallback(async () => {
+    if (!apiUrl) return;
+    try {
+      const res = await fetch(`${apiUrl.replace(/\/$/, '')}/api/buyers`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const arr = await res.json();
+      if (Array.isArray(arr)) {
+        const editObj = {};
+        arr.forEach(d => {
+          if (!d?.buyer) return;
+          editObj[d.buyer] = {
+            receivedAmount: d.receivedAmount || '',
+            paymentMode: d.paymentMode || '',
+            // prefer explicit saved paymentDate, otherwise fallback to createdAt
+            paymentDate: toDisplayDDMMYYYY(d.paymentDate || d.payment_date || d.createdAt || ''),
+            locked: false
+          };
+        });
+        setBuyers(arr);
+        setEditable(editObj);
+        // Don't override an existing Firestore error with backend success silently.
+        // Clear only if no error was set.
+        setError(prev => prev ? prev : '');
+      }
+    } catch (e) {
+      console.error('Backend fetch error:', e);
+      // Only set backend error if we don't already have a Firestore error message
+      setError(prev => prev || 'Could not load data from backend API.');
+    }
+  }, [apiUrl]);
   // Load buyers from Firestore on mount and on change
   useEffect(() => {
     let unsub = () => {};
@@ -82,12 +187,17 @@ function App() {
           ) || 0;
           const receivedAmount = d.receivedAmount || '';
           const paymentMode = d.paymentMode || '';
+          // Prefer explicit payment date fields; support Firestore Timestamp or strings
+          const paymentDate = toDateInputValue(
+            d.paymentDate || d.payment_date || d.date || d.billDate || d.invoiceDate || d.bill_date || d.paidOn || d.paid_date || d.createdAt || ''
+          );
 
-          const normalized = { buyer, place, totalQtls, commission, receivedAmount, paymentMode };
+          const normalized = { buyer, place, totalQtls, commission, receivedAmount, paymentMode, paymentDate };
           arr.push(normalized);
           editObj[buyer] = {
             receivedAmount: receivedAmount,
             paymentMode: paymentMode,
+            paymentDate: toDisplayDDMMYYYY(paymentDate),
             locked: false
           };
         });
@@ -123,37 +233,10 @@ function App() {
     })();
 
     return () => {
-      try { unsub && unsub(); } catch {}
+      try { unsub && unsub(); } catch { /* ignore */ }
     };
-  }, []);
+  }, [apiUrl, loadFromBackend]);
 
-  const loadFromBackend = async () => {
-    try {
-      const res = await fetch(`${apiUrl.replace(/\/$/, '')}/api/buyers`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const arr = await res.json();
-      if (Array.isArray(arr)) {
-        const editObj = {};
-        arr.forEach(d => {
-          if (!d?.buyer) return;
-          editObj[d.buyer] = {
-            receivedAmount: d.receivedAmount || '',
-            paymentMode: d.paymentMode || '',
-            locked: false
-          };
-        });
-        setBuyers(arr);
-        setEditable(editObj);
-        // Don't override an existing Firestore error with backend success silently.
-        // Clear only if no error was set.
-        setError(prev => prev ? prev : '');
-      }
-    } catch (e) {
-      console.error('Backend fetch error:', e);
-      // Only set backend error if we don't already have a Firestore error message
-      setError(prev => prev || 'Could not load data from backend API.');
-    }
-  };
 
   const handleFileUpload = (e) => {
     const file = e.target.files[0];
@@ -166,15 +249,10 @@ function App() {
         const wsname = wb.SheetNames[0];
         const ws = wb.Sheets[wsname];
         const jsonData = XLSX.utils.sheet_to_json(ws, { defval: '' });
-        setData(jsonData);
-        if (jsonData.length > 0) {
-          setHeaders(Object.keys(jsonData[0]));
-        } else {
-          setHeaders([]);
-        }
+        // We don't display raw rows/headers in UI, so we skip storing them
         processBuyers(jsonData);
         setError('');
-      } catch (err) {
+      } catch {
         setError('Invalid Excel file or format.');
       }
     };
@@ -191,6 +269,9 @@ function App() {
       const amount = parseFloat(getVal(row, ['AMOUNT', 'TOTAL AMOUNT', 'Amount']) || 0);
       const miller = (getVal(row, ['MILLER NAME', 'MILLER', 'SELLER']) || '').toString().toLowerCase();
       const place = (getVal(row, ['PLACE', 'LOCATION', 'CITY']) || '').toString().trim();
+      // Optional: read a date column if present
+  const rawDate = getVal(row, ['DATE', 'BILL DATE', 'INVOICE DATE', 'Date', 'date']);
+  const paymentDate = toDateInputValue(rawDate);
       if (!buyer) return;
       if (!buyersMap[buyer]) {
         buyersMap[buyer] = { buyer, totalQtls: 0, commission: 0, place };
@@ -203,6 +284,8 @@ function App() {
         buyersMap[buyer].commission += isNaN(qtls) ? 0 : qtls * 11;
       }
       if (place) buyersMap[buyer].place = place;
+      // Set/overwrite a per-buyer paymentDate if provided in the sheet
+      if (paymentDate) buyersMap[buyer].paymentDate = paymentDate;
     });
     const buyersArray = Object.values(buyersMap);
     // Save to Firestore
@@ -321,6 +404,7 @@ function App() {
                     <th>Commission Amount</th>
                     <th>Received Amount</th>
                     <th>Chq/RTGS/Cash</th>
+                    <th>Date</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -384,6 +468,32 @@ function App() {
                             />
                           </td>
                           <td>
+                            <input
+                              type="text"
+                              placeholder="dd/mm/yyyy"
+                              style={{ width: 140 }}
+                              value={toDisplayDDMMYYYY(editable[b.buyer]?.paymentDate ?? b.paymentDate ?? '')}
+                              onChange={e => setEditable(ed => ({ ...ed, [b.buyer]: { ...ed[b.buyer], paymentDate: e.target.value } }))}
+                              disabled={isLocked}
+                              onBlur={async (e) => {
+                                const displayVal = e.target.value;
+                                const normalized = parseDDMMYYYY(displayVal);
+                                await updateDoc(doc(db, 'buyers', b.buyer), { paymentDate: normalized });
+                                if (apiUrl) {
+                                  try {
+                                    await fetch(`${apiUrl.replace(/\/$/, '')}/api/buyers/${encodeURIComponent(b.buyer)}`, {
+                                      method: 'PATCH',
+                                      headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify({ paymentDate: normalized })
+                                    });
+                                  } catch (e) {
+                                    console.warn('Backend patch failed:', e);
+                                  }
+                                }
+                              }}
+                            />
+                          </td>
+                          <td>
                             {isLocked ? (
                               <button 
                                 className="edit-btn"
@@ -398,7 +508,8 @@ function App() {
                                   setEditable(ed => ({ ...ed, [b.buyer]: { ...ed[b.buyer], locked: true } }));
                                   await updateDoc(doc(db, 'buyers', b.buyer), {
                                     receivedAmount: editable[b.buyer]?.receivedAmount || '',
-                                    paymentMode: editable[b.buyer]?.paymentMode || ''
+                                    paymentMode: editable[b.buyer]?.paymentMode || '',
+                                    paymentDate: parseDDMMYYYY(editable[b.buyer]?.paymentDate || '')
                                   });
                                   if (apiUrl) {
                                     try {
@@ -407,7 +518,8 @@ function App() {
                                         headers: { 'Content-Type': 'application/json' },
                                         body: JSON.stringify({
                                           receivedAmount: editable[b.buyer]?.receivedAmount || '',
-                                          paymentMode: editable[b.buyer]?.paymentMode || ''
+                                          paymentMode: editable[b.buyer]?.paymentMode || '',
+                                          paymentDate: parseDDMMYYYY(editable[b.buyer]?.paymentDate || '')
                                         })
                                       });
                                     } catch (e) {
@@ -436,7 +548,7 @@ function App() {
           </div>
         )}
         <div className="footer-note">
-          <small>Columns expected: buyer name, qtls, amount, seller</small>
+          <small>Columns expected: buyer name, qtls, amount, seller, optional: date</small>
         </div>
       </div>
     </div>
