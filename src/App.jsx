@@ -1,8 +1,7 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { createPortal } from 'react-dom';
+import React, { useState, useEffect } from 'react';
 import * as XLSX from 'xlsx';
 import './App.css';
-import { db } from './firebase';
+import { db, auth } from './firebase';
 import {
   collection,
   getDocs,
@@ -13,18 +12,37 @@ import {
   deleteDoc,
   getFirestore,
 } from "firebase/firestore";
+import { getApp } from 'firebase/app';
+import { signInAnonymously } from 'firebase/auth';
 
 function App() {
+  const apiUrl = import.meta.env.VITE_API_URL || '';
+  // Small helper to normalize row keys for robust header matching
+  const normalizeRow = (row) => {
+    const map = {};
+    Object.keys(row || {}).forEach((k) => {
+      if (!k) return;
+      map[k.toString().trim().toUpperCase()] = row[k];
+    });
+    return map;
+  };
+
+  const getVal = (rowMap, candidates = []) => {
+    for (const key of candidates) {
+      const v = rowMap[key.toUpperCase()];
+      if (v !== undefined && v !== null && v !== '') return v;
+    }
+    return '';
+  };
+
   // Export table to Excel (must be inside App to access state)
   const handleExport = () => {
     const filtered = buyers
-      .filter(b => (!buyerFilter || b.buyer === buyerFilter) && (Array.isArray(placeFilter) ? (placeFilter.length === 0 || placeFilter.includes(b.place || '')) : (!placeFilter || b.place === placeFilter)));
+      .filter(b => (!buyerFilter || b.buyer === buyerFilter) && (!placeFilter || b.place === placeFilter));
     const exportData = filtered.map((b, idx) => ({
       'SL No': idx + 1,
       'Buyer Name': b.buyer,
       'Place': b.place,
-      // prefer DB stored date (dd/mm/yyyy), fall back to editable input converted to DB format
-      'Date': b.date || (editable[b.buyer]?.date ? toDbDate(editable[b.buyer].date) : ''),
       'Total Qtls': b.totalQtls,
       'Commission Amount': b.commission.toFixed(2),
       'Received Amount': editable[b.buyer]?.receivedAmount || '',
@@ -40,111 +58,102 @@ function App() {
   const [error, setError] = useState('');
   const [headers, setHeaders] = useState([]);
   const [buyerFilter, setBuyerFilter] = useState('');
-  const [placeFilter, setPlaceFilter] = useState([]);
-  const [placeDropdownOpen, setPlaceDropdownOpen] = useState(false);
-  const placeRef = useRef(null);
-  const placeToggleRef = useRef(null);
-  const portalMenuRef = useRef(null);
-  const [menuPos, setMenuPos] = useState({ top: 0, left: 0, width: 220 });
+  const [placeFilter, setPlaceFilter] = useState('');
   const [editable, setEditable] = useState({}); // {buyer: {receivedAmount, paymentMode, locked}}
-  const [detectedKeys, setDetectedKeys] = useState(null);
-  // Date helpers: display (input) uses yyyy-mm-dd, DB should store dd/mm/yyyy per requirement
-  const toDbDate = (inputDate) => {
-    if (!inputDate) return '';
-    // if already in dd/mm/yyyy format, return as-is
-    if (inputDate.includes('/')) return inputDate;
-    // expect yyyy-mm-dd from <input type="date">
-    const parts = String(inputDate).split('-');
-    if (parts.length !== 3) return inputDate;
-    const [y, m, d] = parts;
-    return `${d}/${m}/${y}`;
-  };
-
-  const toInputDate = (dbDate) => {
-    if (!dbDate) return '';
-    // if already in yyyy-mm-dd format, return as-is
-    if (dbDate.includes('-')) return dbDate;
-    // expect dd/mm/yyyy in DB
-    const parts = String(dbDate).split('/');
-    if (parts.length !== 3) return dbDate;
-    const [d, m, y] = parts;
-    // pad to ensure two-digit month/day
-    const dd = d.padStart(2, '0');
-    const mm = m.padStart(2, '0');
-    return `${y}-${mm}-${dd}`;
-  };
-
-  // Format qtls to avoid long recurring decimals. Behavior:
-  // - Integers show without decimals
-  // - If decimal part appears to be a repeating single digit (e.g. .333333 or .666666), show one decimal place (1.3, 1.6)
-  // - Otherwise show up to 2 decimal places, trimming trailing zeros
-  const formatQtls = (val) => {
-    if (val === undefined || val === null || val === '') return '';
-    const num = Number(val);
-    if (Number.isNaN(num)) return String(val);
-    if (Number.isInteger(num)) return String(num);
-    // Work with fixed 6 decimal places to detect repetition
-    const fixed = num.toFixed(6);
-    const [intPart, decPartRaw] = fixed.split('.');
-    const decPart = decPartRaw.replace(/0+$/,''); // trim trailing zeros
-    if (!decPart) return intPart;
-    // detect repeating same digit across the (trimmed) decimal part (length >=3)
-    const isRepeating = decPart.length >= 3 && /^([0-9])\1+$/.test(decPart);
-    if (isRepeating) return `${intPart}.${decPart[0]}`;
-    // otherwise, show up to 2 decimals (remove trailing zeros)
-    return parseFloat(String(num.toFixed(2))).toString();
-  };
   // Load buyers from Firestore on mount and on change
   useEffect(() => {
-    const unsub = onSnapshot(collection(db, 'buyers'), (snapshot) => {
-      const arr = [];
-      const editObj = {};
-      snapshot.forEach(docSnap => {
-        const d = docSnap.data();
-        arr.push(d);
-        editObj[d.buyer] = {
-          receivedAmount: d.receivedAmount || '',
-          paymentMode: d.paymentMode || '',
-          // convert DB date (dd/mm/yyyy) into input-friendly yyyy-mm-dd
-          date: toInputDate(d.date || ''),
-          locked: false
-        };
-      });
-      setBuyers(arr);
-      setEditable(editObj);
-    });
-    return () => unsub();
-  }, []);
+    let unsub = () => {};
+    const startListener = () => onSnapshot(
+      collection(db, 'buyers'),
+      (snapshot) => {
+        const arr = [];
+        const editObj = {};
+        snapshot.forEach(docSnap => {
+          const d = docSnap.data() || {};
+          // Normalize possible field names from existing Firestore data
+          const buyer = (d.buyer || d.name || d.buyerName || '').toString().trim();
+          if (!buyer) return; // skip docs without a buyer identifier
+          const place = (d.place || d.location || d.city || '').toString();
+          const totalQtls = Number(
+            d.totalQtls ?? d.qtls ?? d.total ?? d.total_quintals ?? 0
+          ) || 0;
+          const commission = Number(
+            d.commission ?? d.totalCommission ?? d.comm ?? 0
+          ) || 0;
+          const receivedAmount = d.receivedAmount || '';
+          const paymentMode = d.paymentMode || '';
 
-  // Close place dropdown when clicking outside
-  useEffect(() => {
-    const handler = (e) => {
-      // if click is inside the place container or the portal menu, don't close
-      const target = e.target;
-      if (placeRef.current && placeRef.current.contains(target)) return;
-      if (portalMenuRef.current && portalMenuRef.current.contains(target)) return;
-      setPlaceDropdownOpen(false);
-    };
-    document.addEventListener('click', handler);
-    return () => document.removeEventListener('click', handler);
-  }, []);
+          const normalized = { buyer, place, totalQtls, commission, receivedAmount, paymentMode };
+          arr.push(normalized);
+          editObj[buyer] = {
+            receivedAmount: receivedAmount,
+            paymentMode: paymentMode,
+            locked: false
+          };
+        });
+        setBuyers(arr);
+        setEditable(editObj);
+        setError('');
+        // If Firestore has no data, try backend fallback once
+        if (arr.length === 0 && apiUrl) {
+          loadFromBackend();
+        }
+      },
+      (err) => {
+        console.error('Firestore onSnapshot error:', err);
+        const code = err?.code || 'unknown';
+        setError(`Could not load data from Firestore (${code}). Check rules/connection.`);
+        // Try backend as fallback on error
+        if (apiUrl) loadFromBackend();
+      }
+    );
 
-  // update menu position when opening or on resize/scroll
-  useEffect(() => {
-    const updatePos = () => {
-      const btn = placeToggleRef.current;
-      if (!btn) return;
-      const rect = btn.getBoundingClientRect();
-      setMenuPos({ top: rect.bottom + window.scrollY + 8, left: rect.left + window.scrollX, width: Math.max(220, rect.width) });
-    };
-    if (placeDropdownOpen) updatePos();
-    window.addEventListener('resize', updatePos);
-    window.addEventListener('scroll', updatePos, true);
+    (async () => {
+      try {
+        // Ensure we are signed in if rules require auth
+        if (!auth.currentUser) {
+          await signInAnonymously(auth);
+        }
+      } catch (e) {
+        console.error('Firebase anonymous auth failed:', e);
+        setError('Firebase anonymous auth failed. Enable it in Firebase Console > Authentication > Sign-in method.');
+      } finally {
+        unsub = startListener();
+      }
+    })();
+
     return () => {
-      window.removeEventListener('resize', updatePos);
-      window.removeEventListener('scroll', updatePos, true);
+      try { unsub && unsub(); } catch {}
     };
-  }, [placeDropdownOpen]);
+  }, []);
+
+  const loadFromBackend = async () => {
+    try {
+      const res = await fetch(`${apiUrl.replace(/\/$/, '')}/api/buyers`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const arr = await res.json();
+      if (Array.isArray(arr)) {
+        const editObj = {};
+        arr.forEach(d => {
+          if (!d?.buyer) return;
+          editObj[d.buyer] = {
+            receivedAmount: d.receivedAmount || '',
+            paymentMode: d.paymentMode || '',
+            locked: false
+          };
+        });
+        setBuyers(arr);
+        setEditable(editObj);
+        // Don't override an existing Firestore error with backend success silently.
+        // Clear only if no error was set.
+        setError(prev => prev ? prev : '');
+      }
+    } catch (e) {
+      console.error('Backend fetch error:', e);
+      // Only set backend error if we don't already have a Firestore error message
+      setError(prev => prev || 'Could not load data from backend API.');
+    }
+  };
 
   const handleFileUpload = (e) => {
     const file = e.target.files[0];
@@ -175,83 +184,42 @@ function App() {
   // Save imported buyers to Firestore (overwrites existing)
   const processBuyers = async (rows) => {
     const buyersMap = {};
-    if (!rows || rows.length === 0) return;
-
-    // Build header lookup from the first row (case-insensitive)
-    const firstRow = rows[0] || {};
-    const keys = Object.keys(firstRow);
-    const lowerKeys = keys.map(k => k.toLowerCase());
-
-    const findKey = (candidates, preferExact = false) => {
-      // preferExact: try exact match first (useful for PLACE since you insisted it's exact)
-      for (const cand of candidates) {
-        if (preferExact) {
-          const idxExact = lowerKeys.findIndex(k => k === cand);
-          if (idxExact !== -1) return keys[idxExact];
-        }
-        const idx = lowerKeys.findIndex(k => k.includes(cand));
-        if (idx !== -1) return keys[idx];
-      }
-      return null;
-    };
-
-  const buyerKey = findKey(['buyer', 'buyer name', 'buyername', 'buyer namer']);
-    const qtlsKey = findKey(['qtls', 'qtl', 'qty', 'quantity']);
-    const amountKey = findKey(['amount', 'amt', 'price', 'total amount']);
-    const millerKey = findKey(['miller', 'miller name', 'seller', 'broker']);
-    // For PLACE the user said there's only one heading named PLACE, prefer exact
-    const placeKey = findKey(['place', 'location', 'city'], true) || findKey(['place', 'location', 'city']);
-
-  // Expose detected keys for debugging in the UI
-  try { setDetectedKeys({ buyerKey, qtlsKey, amountKey, millerKey, placeKey }); } catch (e) { /* ignore during tests */ }
-
-    const parseNumber = (val) => {
-      if (val === undefined || val === null || val === '') return NaN;
-      const s = String(val).replace(/[\s,\u20B9\$]/g, '').replace(/[()]/g, '');
-      const cleaned = s.replace(/[^0-9.\-]/g, '');
-      return parseFloat(cleaned);
-    };
-
-    const normalize = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-
-    rows.forEach(row => {
-      const buyer = buyerKey ? String(row[buyerKey] || '').trim() : '';
-      const qtls = qtlsKey ? parseNumber(row[qtlsKey]) : NaN;
-      const amount = amountKey ? parseNumber(row[amountKey]) : NaN;
-      const millerRaw = millerKey ? String(row[millerKey] || '') : '';
-      const miller = normalize(millerRaw);
-      const place = placeKey ? String(row[placeKey] || '').trim() : '';
-
-      if (!buyer) return; // skip rows without buyer
-
+    rows.forEach(raw => {
+      const row = normalizeRow(raw);
+      const buyer = getVal(row, ['BUYER NAME', 'BUYER', 'BUYER NAMER']).toString().trim();
+      const qtls = parseFloat(getVal(row, ['QTLS', 'QTL', 'QUINTALS', 'qtls', 'Qtls']) || 0);
+      const amount = parseFloat(getVal(row, ['AMOUNT', 'TOTAL AMOUNT', 'Amount']) || 0);
+      const miller = (getVal(row, ['MILLER NAME', 'MILLER', 'SELLER']) || '').toString().toLowerCase();
+      const place = (getVal(row, ['PLACE', 'LOCATION', 'CITY']) || '').toString().trim();
+      if (!buyer) return;
       if (!buyersMap[buyer]) {
-        buyersMap[buyer] = { buyer, totalQtls: 0, commission: 0 };
+        buyersMap[buyer] = { buyer, totalQtls: 0, commission: 0, place };
       }
-
       buyersMap[buyer].totalQtls += isNaN(qtls) ? 0 : qtls;
-
-      // Flexible matching for nidhi/nihi agros variants
-      const isNidhiAgros = (() => {
-        if (!miller) return false;
-        // check combinations like 'nidhi' + 'agro' in any order and tolerate typos like 'nihi'
-        if (/nidhi/.test(miller) && /agro/.test(miller)) return true;
-        if (/nihi/.test(miller) && /agro/.test(miller)) return true;
-        if (miller.includes('nidhiagros') || miller.includes('nihiagros') || miller.includes('nidhiagro')) return true;
-        return false;
-      })();
-
-      if (isNidhiAgros) {
-        buyersMap[buyer].commission += isNaN(amount) ? 0 : amount * 0.01; // 1% of amount
+      // Commission calculation
+      if (miller.includes('nidhiagros')) {
+        buyersMap[buyer].commission += isNaN(amount) ? 0 : amount * 0.01;
       } else {
         buyersMap[buyer].commission += isNaN(qtls) ? 0 : qtls * 11;
       }
-
       if (place) buyersMap[buyer].place = place;
     });
-
-    // Save each buyer to Firestore (merge: true to keep manual fields)
-    for (const b of Object.values(buyersMap)) {
+    const buyersArray = Object.values(buyersMap);
+    // Save to Firestore
+    for (const b of buyersArray) {
       await setDoc(doc(db, 'buyers', b.buyer), b, { merge: true });
+    }
+    // Also upsert to backend if configured
+    if (apiUrl && buyersArray.length) {
+      try {
+        await fetch(`${apiUrl.replace(/\/$/, '')}/api/buyers`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(buyersArray)
+        });
+      } catch (e) {
+        console.warn('Backend bulk upsert failed:', e);
+      }
     }
   };
 
@@ -276,6 +244,11 @@ function App() {
   return (
     <div className="App">
       <h2>Excel Importer: Buyer Summary</h2>
+      <div className="footer-note" style={{ marginBottom: 8 }}>
+        <small>Connected Firebase project: {(() => {
+          try { return getApp().options.projectId || 'unknown'; } catch { return 'unknown'; }
+        })()}</small>
+      </div>
       <button
         className="danger-btn"
         style={{ marginBottom: 18 }}
@@ -292,20 +265,13 @@ function App() {
         <input type="file" accept=".xlsx, .xls" onChange={handleFileUploadWithClear} />
         {error && <div className="error-message">{error}</div>}
       </div>
-      {/* Debug info: show detected headers and preview rows */}
+      {/* Content */}
       <div style={{ marginTop: 20 }}>
-        {/* Debug panel */}
-        {detectedKeys && (
-          <div style={{ marginBottom: 12, padding: 8, border: '1px solid #ddd' }}>
-            <strong>Debug:</strong>
-            <div>Headers: {JSON.stringify(headers)}</div>
-            <div>Detected keys: {JSON.stringify(detectedKeys)}</div>
-            <div style={{ maxHeight: 120, overflow: 'auto' }}>Editable state preview: {JSON.stringify(Object.keys(editable).slice(0,10))}</div>
-            <div>Data rows preview (first 2): {JSON.stringify(data.slice(0,2))}</div>
+        {buyers.length === 0 ? (
+          <div className="empty-state">
+            <p>No buyers found yet. Upload an Excel file to populate data.</p>
           </div>
-        )}
-
-        {buyers.length > 0 && (
+        ) : (
           <div>
             {/* Search and select for buyer name */}
             <div className="filters-container">
@@ -318,11 +284,11 @@ function App() {
                       const val = e.target.value;
                       setBuyerFilter(val);
                       if (val) {
-                        // Find the place for this buyer and select it (single selection becomes an array)
+                        // Find the place for this buyer
                         const found = buyers.find(b => b.buyer === val);
-                        if (found) setPlaceFilter(found.place ? [found.place] : []);
+                        if (found) setPlaceFilter(found.place || '');
                       } else {
-                        setPlaceFilter([]);
+                        setPlaceFilter('');
                       }
                     }}
                   >
@@ -332,59 +298,14 @@ function App() {
                     ))}
                   </select>
                 </div>
-                <div className="filter-group" ref={placeRef} style={{ position: 'relative' }}>
+                <div className="filter-group">
                   <label>Place</label>
-                  <div className="place-dropdown">
-                    <button ref={placeToggleRef} type="button" onClick={() => setPlaceDropdownOpen(open => !open)} className="place-dropdown-toggle">
-                      {placeFilter && placeFilter.length > 0 ? `${placeFilter.length} selected` : 'All'} ▾
-                    </button>
-                    <div style={{ marginTop: 6, fontSize: 12, color: '#333' }}>Selected: {placeFilter && placeFilter.length > 0 ? placeFilter.join(', ') : 'All'}</div>
-                    {placeDropdownOpen && createPortal(
-                      <div
-                        ref={portalMenuRef}
-                        className="place-dropdown-menu"
-                        style={{ position: 'absolute', top: menuPos.top, left: menuPos.left, width: menuPos.width, zIndex: 2147483647 }}
-                        onClick={e => e.stopPropagation()}
-                      >
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                          <strong style={{ fontSize: 13 }}>Select places</strong>
-                          <button className="clear-btn" onClick={() => setPlaceFilter([])}>Clear</button>
-                        </div>
-                        <div style={{ marginBottom: 6 }}>
-                          <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                            <input
-                              type="checkbox"
-                              checked={placeFilter.length === 0}
-                              onChange={e => {
-                                if (e.target.checked) setPlaceFilter([]);
-                              }}
-                            />
-                            <span>All</span>
-                          </label>
-                        </div>
-                        {[...new Set(buyers.map(b => b.place).filter(Boolean))].map(place => (
-                          <div key={place} style={{ marginBottom: 6 }}>
-                            <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                              <input
-                                type="checkbox"
-                                value={place}
-                                checked={placeFilter.includes(place)}
-                                onChange={e => {
-                                  const checked = e.target.checked;
-                                  setPlaceFilter(prev => {
-                                    if (checked) return Array.from(new Set([...prev, place]));
-                                    return prev.filter(p => p !== place);
-                                  });
-                                }}
-                              />
-                              <span>{place}</span>
-                            </label>
-                          </div>
-                        ))}
-                      </div>,
-                      document.body
-                    )}
-                  </div>
+                  <select value={placeFilter} onChange={e => setPlaceFilter(e.target.value)}>
+                    <option value="">All</option>
+                    {[...new Set(buyers.map(b => b.place).filter(Boolean))].map(place => (
+                      <option key={place} value={place}>{place}</option>
+                    ))}
+                  </select>
                 </div>
               </div>
             </div>
@@ -400,13 +321,11 @@ function App() {
                     <th>Commission Amount</th>
                     <th>Received Amount</th>
                     <th>Chq/RTGS/Cash</th>
-                    <th>Date</th>
-                    <th>Action</th>
                   </tr>
                 </thead>
                 <tbody>
                   {buyers
-                    .filter(b => (!buyerFilter || b.buyer === buyerFilter) && (Array.isArray(placeFilter) ? (placeFilter.length === 0 || placeFilter.includes(b.place || '')) : (!placeFilter || b.place === placeFilter)))
+                    .filter(b => (!buyerFilter || b.buyer === buyerFilter) && (!placeFilter || b.place === placeFilter))
                     .map((b, idx) => {
                       const isLocked = editable[b.buyer]?.locked;
                       return (
@@ -414,7 +333,7 @@ function App() {
                           <td>{idx + 1}</td>
                           <td>{b.buyer}</td>
                           <td>{b.place}</td>
-                          <td>{formatQtls(b.totalQtls)}</td>
+                          <td>{b.totalQtls}</td>
                           <td>{b.commission.toFixed(2)}</td>
                           <td>
                             <input
@@ -424,7 +343,19 @@ function App() {
                               onChange={e => setEditable(ed => ({ ...ed, [b.buyer]: { ...ed[b.buyer], receivedAmount: e.target.value } }))}
                               disabled={isLocked}
                               onBlur={async (e) => {
-                                await updateDoc(doc(db, 'buyers', b.buyer), { receivedAmount: e.target.value });
+                                const val = e.target.value;
+                                await updateDoc(doc(db, 'buyers', b.buyer), { receivedAmount: val });
+                                if (apiUrl) {
+                                  try {
+                                    await fetch(`${apiUrl.replace(/\/$/, '')}/api/buyers/${encodeURIComponent(b.buyer)}`, {
+                                      method: 'PATCH',
+                                      headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify({ receivedAmount: val })
+                                    });
+                                  } catch (e) {
+                                    console.warn('Backend patch failed:', e);
+                                  }
+                                }
                               }}
                             />
                           </td>
@@ -436,47 +367,58 @@ function App() {
                               onChange={e => setEditable(ed => ({ ...ed, [b.buyer]: { ...ed[b.buyer], paymentMode: e.target.value } }))}
                               disabled={isLocked}
                               onBlur={async (e) => {
-                                await updateDoc(doc(db, 'buyers', b.buyer), { paymentMode: e.target.value });
-                              }}
-                            />
-                          </td>
-                          <td>
-                            <input
-                              type="date"
-                              style={{ width: 140 }}
-                              value={editable[b.buyer]?.date || ''}
-                              onChange={e => setEditable(ed => ({ ...ed, [b.buyer]: { ...ed[b.buyer], date: e.target.value } }))}
-                              disabled={isLocked}
-                              onBlur={async (e) => {
-                                // convert to DB format (dd/mm/yyyy) when saving single-field onBlur
-                                const dbVal = toDbDate(e.target.value);
-                                await updateDoc(doc(db, 'buyers', b.buyer), { date: dbVal });
-                              }}
-                            />
-                          </td>
-                          <td>
-                            <button
-                              className={isLocked ? 'edit-btn' : 'save-edit-btn'}
-                              onClick={async () => {
-                                if (!isLocked) {
-                                  // Save: capture current values and persist, then lock the row
-                                  const current = editable[b.buyer] || {};
-                                  const payload = {
-                                    receivedAmount: current.receivedAmount || '',
-                                    paymentMode: current.paymentMode || '',
-                                    date: toDbDate(current.date || '')
-                                  };
-                                  // mark locked immediately in UI so button becomes 'Edit'
-                                  setEditable(ed => ({ ...ed, [b.buyer]: { ...ed[b.buyer], locked: true } }));
-                                  await updateDoc(doc(db, 'buyers', b.buyer), payload);
-                                } else {
-                                  // Edit: unlock the row for editing
-                                  setEditable(ed => ({ ...ed, [b.buyer]: { ...ed[b.buyer], locked: false } }));
+                                const val = e.target.value;
+                                await updateDoc(doc(db, 'buyers', b.buyer), { paymentMode: val });
+                                if (apiUrl) {
+                                  try {
+                                    await fetch(`${apiUrl.replace(/\/$/, '')}/api/buyers/${encodeURIComponent(b.buyer)}`, {
+                                      method: 'PATCH',
+                                      headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify({ paymentMode: val })
+                                    });
+                                  } catch (e) {
+                                    console.warn('Backend patch failed:', e);
+                                  }
                                 }
                               }}
-                            >
-                              {isLocked ? 'Edit' : 'Save'}
-                            </button>
+                            />
+                          </td>
+                          <td>
+                            {isLocked ? (
+                              <button 
+                                className="edit-btn"
+                                onClick={() => setEditable(ed => ({ ...ed, [b.buyer]: { ...ed[b.buyer], locked: false } }))}
+                              >
+                                Edit
+                              </button>
+                            ) : (
+                              <button 
+                                className="save-edit-btn"
+                                onClick={async () => {
+                                  setEditable(ed => ({ ...ed, [b.buyer]: { ...ed[b.buyer], locked: true } }));
+                                  await updateDoc(doc(db, 'buyers', b.buyer), {
+                                    receivedAmount: editable[b.buyer]?.receivedAmount || '',
+                                    paymentMode: editable[b.buyer]?.paymentMode || ''
+                                  });
+                                  if (apiUrl) {
+                                    try {
+                                      await fetch(`${apiUrl.replace(/\/$/, '')}/api/buyers/${encodeURIComponent(b.buyer)}`, {
+                                        method: 'PATCH',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({
+                                          receivedAmount: editable[b.buyer]?.receivedAmount || '',
+                                          paymentMode: editable[b.buyer]?.paymentMode || ''
+                                        })
+                                      });
+                                    } catch (e) {
+                                      console.warn('Backend patch failed:', e);
+                                    }
+                                  }
+                                }}
+                              >
+                                Save
+                              </button>
+                            )}
                           </td>
                         </tr>
                       );
