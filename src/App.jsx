@@ -122,7 +122,9 @@ function App() {
       'Commission Amount': b.commission.toFixed(2),
       'Received Amount': editable[b.buyer]?.receivedAmount || '',
       'Chq/RTGS/Cash': editable[b.buyer]?.paymentMode || '',
-      'Date': toDisplayDDMMYYYY(editable[b.buyer]?.paymentDate || b.paymentDate || '')
+      'Date': (editable[b.buyer] && editable[b.buyer].paymentDateText !== undefined && editable[b.buyer].paymentDateText !== '')
+        ? editable[b.buyer].paymentDateText
+        : toDisplayDDMMYYYY(editable[b.buyer]?.paymentDate || b.paymentDate || '')
     }));
     const ws = XLSX.utils.json_to_sheet(exportData);
     const wb = XLSX.utils.book_new();
@@ -133,7 +135,7 @@ function App() {
   const [error, setError] = useState('');
   const [buyerFilter, setBuyerFilter] = useState('');
   const [placeFilter, setPlaceFilter] = useState('');
-  const [editable, setEditable] = useState({}); // {buyer: {receivedAmount, paymentMode, paymentDate, locked}}
+  const [editable, setEditable] = useState({}); // {buyer: {receivedAmount, paymentMode, paymentDate, paymentDateText, locked}}
   // Backend fallback loader
   const loadFromBackend = useCallback(async () => {
     if (!apiUrl) return;
@@ -150,6 +152,7 @@ function App() {
             paymentMode: d.paymentMode || '',
             // prefer explicit saved paymentDate, otherwise fallback to createdAt
             paymentDate: toDisplayDDMMYYYY(d.paymentDate || d.payment_date || d.createdAt || ''),
+            paymentDateText: '',
             locked: false
           };
         });
@@ -198,6 +201,7 @@ function App() {
             receivedAmount: receivedAmount,
             paymentMode: paymentMode,
             paymentDate: toDisplayDDMMYYYY(paymentDate),
+            paymentDateText: '',
             locked: false
           };
         });
@@ -468,30 +472,55 @@ function App() {
                             />
                           </td>
                           <td>
-                            <input
-                              type="text"
-                              placeholder="dd/mm/yyyy"
-                              style={{ width: 140 }}
-                              value={toDisplayDDMMYYYY(editable[b.buyer]?.paymentDate ?? b.paymentDate ?? '')}
-                              onChange={e => setEditable(ed => ({ ...ed, [b.buyer]: { ...ed[b.buyer], paymentDate: e.target.value } }))}
-                              disabled={isLocked}
-                              onBlur={async (e) => {
-                                const displayVal = e.target.value;
-                                const normalized = parseDDMMYYYY(displayVal);
-                                await updateDoc(doc(db, 'buyers', b.buyer), { paymentDate: normalized });
-                                if (apiUrl) {
-                                  try {
-                                    await fetch(`${apiUrl.replace(/\/$/, '')}/api/buyers/${encodeURIComponent(b.buyer)}`, {
-                                      method: 'PATCH',
-                                      headers: { 'Content-Type': 'application/json' },
-                                      body: JSON.stringify({ paymentDate: normalized })
-                                    });
-                                  } catch (e) {
-                                    console.warn('Backend patch failed:', e);
-                                  }
-                                }
-                              }}
-                            />
+                            {(() => {
+                              // Determine current YYYY-MM-DD value for the native date input
+                              const currentYMD = (() => {
+                                const text = editable[b.buyer]?.paymentDateText;
+                                if (text) return parseDDMMYYYY(text);
+                                const display = editable[b.buyer]?.paymentDate; // DD/MM/YYYY
+                                if (display) return parseDDMMYYYY(display);
+                                return toDateInputValue(b.paymentDate || '');
+                              })();
+                              return (
+                                <div style={{ display: 'flex', flexDirection: 'column' }}>
+                                  <input
+                                    type="date"
+                                    style={{ width: 160 }}
+                                    value={currentYMD}
+                                    onChange={e => {
+                                      const ymd = e.target.value;
+                                      setEditable(ed => ({
+                                        ...ed,
+                                        [b.buyer]: {
+                                          ...ed[b.buyer],
+                                          paymentDate: toDisplayDDMMYYYY(ymd),
+                                          paymentDateText: ''
+                                        }
+                                      }));
+                                    }}
+                                    disabled={isLocked}
+                                    onBlur={async (e) => {
+                                      const ymd = e.target.value;
+                                      await updateDoc(doc(db, 'buyers', b.buyer), { paymentDate: ymd });
+                                      if (apiUrl) {
+                                        try {
+                                          await fetch(`${apiUrl.replace(/\/$/, '')}/api/buyers/${encodeURIComponent(b.buyer)}`, {
+                                            method: 'PATCH',
+                                            headers: { 'Content-Type': 'application/json' },
+                                            body: JSON.stringify({ paymentDate: ymd })
+                                          });
+                                        } catch (e) {
+                                          console.warn('Backend patch failed:', e);
+                                        }
+                                      }
+                                    }}
+                                  />
+                                  <small style={{ color: '#718096', marginTop: 4 }}>
+                                    {currentYMD ? toDisplayDDMMYYYY(currentYMD) : ''}
+                                  </small>
+                                </div>
+                              );
+                            })()}
                           </td>
                           <td>
                             {isLocked ? (
@@ -509,6 +538,7 @@ function App() {
                                   await updateDoc(doc(db, 'buyers', b.buyer), {
                                     receivedAmount: editable[b.buyer]?.receivedAmount || '',
                                     paymentMode: editable[b.buyer]?.paymentMode || '',
+                                    // Save current date from editable (already DD/MM), convert to YMD
                                     paymentDate: parseDDMMYYYY(editable[b.buyer]?.paymentDate || '')
                                   });
                                   if (apiUrl) {
