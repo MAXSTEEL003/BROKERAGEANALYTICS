@@ -170,7 +170,7 @@ function App() {
   }, [apiUrl]);
   // Load buyers from Firestore on mount and on change
   useEffect(() => {
-    let unsub = () => {};
+    let unsub = () => { };
     const startListener = () => onSnapshot(
       collection(db, 'buyers'),
       (snapshot) => {
@@ -274,8 +274,8 @@ function App() {
       const miller = (getVal(row, ['MILLER NAME', 'MILLER', 'SELLER']) || '').toString().toLowerCase();
       const place = (getVal(row, ['PLACE', 'LOCATION', 'CITY']) || '').toString().trim();
       // Optional: read a date column if present
-  const rawDate = getVal(row, ['DATE', 'BILL DATE', 'INVOICE DATE', 'Date', 'date']);
-  const paymentDate = toDateInputValue(rawDate);
+      const rawDate = getVal(row, ['DATE', 'BILL DATE', 'INVOICE DATE', 'Date', 'date']);
+      const paymentDate = toDateInputValue(rawDate);
       if (!buyer) return;
       if (!buyersMap[buyer]) {
         buyersMap[buyer] = { buyer, totalQtls: 0, commission: 0, place };
@@ -310,12 +310,38 @@ function App() {
     }
   };
 
-  // Handler to clear DB and upload new file
+  // Handler to clear DB and upload new file (auto-backs up first)
   const handleFileUploadWithClear = async (e) => {
     if (!e.target.files[0]) return;
-    if (!window.confirm('This will delete all previous buyer data. Continue?')) return;
+    if (!window.confirm('This will delete all previous buyer data.\n\nA backup Excel file will be downloaded automatically before deletion.\n\nContinue?')) return;
+    await autoBackupBeforeDelete();
     await clearAllBuyers();
     handleFileUpload(e);
+  };
+
+  // ─── Auto-backup: exports ALL current Firestore data to Excel before any delete ───
+  const autoBackupBeforeDelete = async () => {
+    const querySnapshot = await getDocs(collection(db, 'buyers'));
+    const rows = [];
+    querySnapshot.forEach((docSnap) => {
+      const d = docSnap.data() || {};
+      rows.push({
+        'Buyer Name': d.buyer || '',
+        'Place': d.place || '',
+        'Total Qtls': d.totalQtls || 0,
+        'Commission Amount': d.commission ? Number(d.commission).toFixed(2) : '0.00',
+        'Received Amount': d.receivedAmount || '',
+        'Chq/RTGS/Cash': d.paymentMode || '',
+        'Date': d.paymentDate || d.date || '',
+      });
+    });
+    if (rows.length === 0) return; // nothing to back up
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Backup');
+    const now = new Date();
+    const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
+    XLSX.writeFile(wb, `buyers_backup_${stamp}.xlsx`);
   };
 
   // Utility to clear all buyers from Firestore
@@ -340,10 +366,14 @@ function App() {
         className="danger-btn"
         style={{ marginBottom: 18 }}
         onClick={async () => {
-          if (window.confirm('This will permanently delete ALL buyer data from the database. Are you sure?')) {
-            await clearAllBuyers();
-            alert('All buyer data deleted!');
+          const answer = window.prompt('⚠️ This will permanently delete ALL buyer data.\n\nA backup Excel file will be downloaded first.\n\nType DELETE to confirm:');
+          if (answer !== 'DELETE') {
+            if (answer !== null) alert('Cancelled — you must type DELETE exactly to proceed.');
+            return;
           }
+          await autoBackupBeforeDelete();
+          await clearAllBuyers();
+          alert('✅ Backup downloaded & all buyer data deleted!');
         }}
       >
         CLEAR ALL DATA (DANGER)
@@ -399,172 +429,172 @@ function App() {
             <div className="table-container">
               <div style={{ overflowX: 'auto' }}>
                 <table className="buyer-table">
-                <thead>
-                  <tr>
-                    <th>SL No</th>
-                    <th>Buyer Name</th>
-                    <th>Place</th>
-                    <th>Total Qtls</th>
-                    <th>Commission Amount</th>
-                    <th>Received Amount</th>
-                    <th>Chq/RTGS/Cash</th>
-                    <th>Date</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {buyers
-                    .filter(b => (!buyerFilter || b.buyer === buyerFilter) && (!placeFilter || b.place === placeFilter))
-                    .map((b, idx) => {
-                      const isLocked = editable[b.buyer]?.locked;
-                      return (
-                        <tr key={b.buyer}>
-                          <td>{idx + 1}</td>
-                          <td>{b.buyer}</td>
-                          <td>{b.place}</td>
-                          <td>{b.totalQtls}</td>
-                          <td>{b.commission.toFixed(2)}</td>
-                          <td>
-                            <input
-                              type="number"
-                              style={{ width: 100 }}
-                              value={editable[b.buyer]?.receivedAmount || ''}
-                              onChange={e => setEditable(ed => ({ ...ed, [b.buyer]: { ...ed[b.buyer], receivedAmount: e.target.value } }))}
-                              disabled={isLocked}
-                              onBlur={async (e) => {
-                                const val = e.target.value;
-                                await updateDoc(doc(db, 'buyers', b.buyer), { receivedAmount: val });
-                                if (apiUrl) {
-                                  try {
-                                    await fetch(`${apiUrl.replace(/\/$/, '')}/api/buyers/${encodeURIComponent(b.buyer)}`, {
-                                      method: 'PATCH',
-                                      headers: { 'Content-Type': 'application/json' },
-                                      body: JSON.stringify({ receivedAmount: val })
-                                    });
-                                  } catch (e) {
-                                    console.warn('Backend patch failed:', e);
-                                  }
-                                }
-                              }}
-                            />
-                          </td>
-                          <td>
-                            <input
-                              type="text"
-                              style={{ width: 110 }}
-                              value={editable[b.buyer]?.paymentMode || ''}
-                              onChange={e => setEditable(ed => ({ ...ed, [b.buyer]: { ...ed[b.buyer], paymentMode: e.target.value } }))}
-                              disabled={isLocked}
-                              onBlur={async (e) => {
-                                const val = e.target.value;
-                                await updateDoc(doc(db, 'buyers', b.buyer), { paymentMode: val });
-                                if (apiUrl) {
-                                  try {
-                                    await fetch(`${apiUrl.replace(/\/$/, '')}/api/buyers/${encodeURIComponent(b.buyer)}`, {
-                                      method: 'PATCH',
-                                      headers: { 'Content-Type': 'application/json' },
-                                      body: JSON.stringify({ paymentMode: val })
-                                    });
-                                  } catch (e) {
-                                    console.warn('Backend patch failed:', e);
-                                  }
-                                }
-                              }}
-                            />
-                          </td>
-                          <td>
-                            {(() => {
-                              // Determine current YYYY-MM-DD value for the native date input
-                              const currentYMD = (() => {
-                                const text = editable[b.buyer]?.paymentDateText;
-                                if (text) return parseDDMMYYYY(text);
-                                const display = editable[b.buyer]?.paymentDate; // DD/MM/YYYY
-                                if (display) return parseDDMMYYYY(display);
-                                return toDateInputValue(b.paymentDate || '');
-                              })();
-                              return (
-                                <div style={{ display: 'flex', flexDirection: 'column' }}>
-                                  <input
-                                    type="date"
-                                    style={{ width: 160 }}
-                                    value={currentYMD}
-                                    onChange={e => {
-                                      const ymd = e.target.value;
-                                      setEditable(ed => ({
-                                        ...ed,
-                                        [b.buyer]: {
-                                          ...ed[b.buyer],
-                                          paymentDate: toDisplayDDMMYYYY(ymd),
-                                          paymentDateText: ''
-                                        }
-                                      }));
-                                    }}
-                                    disabled={isLocked}
-                                    onBlur={async (e) => {
-                                      const ymd = e.target.value;
-                                      await updateDoc(doc(db, 'buyers', b.buyer), { paymentDate: ymd });
-                                      if (apiUrl) {
-                                        try {
-                                          await fetch(`${apiUrl.replace(/\/$/, '')}/api/buyers/${encodeURIComponent(b.buyer)}`, {
-                                            method: 'PATCH',
-                                            headers: { 'Content-Type': 'application/json' },
-                                            body: JSON.stringify({ paymentDate: ymd })
-                                          });
-                                        } catch (e) {
-                                          console.warn('Backend patch failed:', e);
-                                        }
-                                      }
-                                    }}
-                                  />
-                                  <small style={{ color: '#718096', marginTop: 4 }}>
-                                    {currentYMD ? toDisplayDDMMYYYY(currentYMD) : ''}
-                                  </small>
-                                </div>
-                              );
-                            })()}
-                          </td>
-                          <td>
-                            {isLocked ? (
-                              <button 
-                                className="edit-btn"
-                                onClick={() => setEditable(ed => ({ ...ed, [b.buyer]: { ...ed[b.buyer], locked: false } }))}
-                              >
-                                Edit
-                              </button>
-                            ) : (
-                              <button 
-                                className="save-edit-btn"
-                                onClick={async () => {
-                                  setEditable(ed => ({ ...ed, [b.buyer]: { ...ed[b.buyer], locked: true } }));
-                                  await updateDoc(doc(db, 'buyers', b.buyer), {
-                                    receivedAmount: editable[b.buyer]?.receivedAmount || '',
-                                    paymentMode: editable[b.buyer]?.paymentMode || '',
-                                    // Save current date from editable (already DD/MM), convert to YMD
-                                    paymentDate: parseDDMMYYYY(editable[b.buyer]?.paymentDate || '')
-                                  });
+                  <thead>
+                    <tr>
+                      <th>SL No</th>
+                      <th>Buyer Name</th>
+                      <th>Place</th>
+                      <th>Total Qtls</th>
+                      <th>Commission Amount</th>
+                      <th>Received Amount</th>
+                      <th>Chq/RTGS/Cash</th>
+                      <th>Date</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {buyers
+                      .filter(b => (!buyerFilter || b.buyer === buyerFilter) && (!placeFilter || b.place === placeFilter))
+                      .map((b, idx) => {
+                        const isLocked = editable[b.buyer]?.locked;
+                        return (
+                          <tr key={b.buyer}>
+                            <td>{idx + 1}</td>
+                            <td>{b.buyer}</td>
+                            <td>{b.place}</td>
+                            <td>{b.totalQtls}</td>
+                            <td>{b.commission.toFixed(2)}</td>
+                            <td>
+                              <input
+                                type="number"
+                                style={{ width: 100 }}
+                                value={editable[b.buyer]?.receivedAmount || ''}
+                                onChange={e => setEditable(ed => ({ ...ed, [b.buyer]: { ...ed[b.buyer], receivedAmount: e.target.value } }))}
+                                disabled={isLocked}
+                                onBlur={async (e) => {
+                                  const val = e.target.value;
+                                  await updateDoc(doc(db, 'buyers', b.buyer), { receivedAmount: val });
                                   if (apiUrl) {
                                     try {
                                       await fetch(`${apiUrl.replace(/\/$/, '')}/api/buyers/${encodeURIComponent(b.buyer)}`, {
                                         method: 'PATCH',
                                         headers: { 'Content-Type': 'application/json' },
-                                        body: JSON.stringify({
-                                          receivedAmount: editable[b.buyer]?.receivedAmount || '',
-                                          paymentMode: editable[b.buyer]?.paymentMode || '',
-                                          paymentDate: parseDDMMYYYY(editable[b.buyer]?.paymentDate || '')
-                                        })
+                                        body: JSON.stringify({ receivedAmount: val })
                                       });
                                     } catch (e) {
                                       console.warn('Backend patch failed:', e);
                                     }
                                   }
                                 }}
-                              >
-                                Save
-                              </button>
-                            )}
-                          </td>
-                        </tr>
-                      );
-                    })}
+                              />
+                            </td>
+                            <td>
+                              <input
+                                type="text"
+                                style={{ width: 110 }}
+                                value={editable[b.buyer]?.paymentMode || ''}
+                                onChange={e => setEditable(ed => ({ ...ed, [b.buyer]: { ...ed[b.buyer], paymentMode: e.target.value } }))}
+                                disabled={isLocked}
+                                onBlur={async (e) => {
+                                  const val = e.target.value;
+                                  await updateDoc(doc(db, 'buyers', b.buyer), { paymentMode: val });
+                                  if (apiUrl) {
+                                    try {
+                                      await fetch(`${apiUrl.replace(/\/$/, '')}/api/buyers/${encodeURIComponent(b.buyer)}`, {
+                                        method: 'PATCH',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({ paymentMode: val })
+                                      });
+                                    } catch (e) {
+                                      console.warn('Backend patch failed:', e);
+                                    }
+                                  }
+                                }}
+                              />
+                            </td>
+                            <td>
+                              {(() => {
+                                // Determine current YYYY-MM-DD value for the native date input
+                                const currentYMD = (() => {
+                                  const text = editable[b.buyer]?.paymentDateText;
+                                  if (text) return parseDDMMYYYY(text);
+                                  const display = editable[b.buyer]?.paymentDate; // DD/MM/YYYY
+                                  if (display) return parseDDMMYYYY(display);
+                                  return toDateInputValue(b.paymentDate || '');
+                                })();
+                                return (
+                                  <div style={{ display: 'flex', flexDirection: 'column' }}>
+                                    <input
+                                      type="date"
+                                      style={{ width: 160 }}
+                                      value={currentYMD}
+                                      onChange={e => {
+                                        const ymd = e.target.value;
+                                        setEditable(ed => ({
+                                          ...ed,
+                                          [b.buyer]: {
+                                            ...ed[b.buyer],
+                                            paymentDate: toDisplayDDMMYYYY(ymd),
+                                            paymentDateText: ''
+                                          }
+                                        }));
+                                      }}
+                                      disabled={isLocked}
+                                      onBlur={async (e) => {
+                                        const ymd = e.target.value;
+                                        await updateDoc(doc(db, 'buyers', b.buyer), { paymentDate: ymd });
+                                        if (apiUrl) {
+                                          try {
+                                            await fetch(`${apiUrl.replace(/\/$/, '')}/api/buyers/${encodeURIComponent(b.buyer)}`, {
+                                              method: 'PATCH',
+                                              headers: { 'Content-Type': 'application/json' },
+                                              body: JSON.stringify({ paymentDate: ymd })
+                                            });
+                                          } catch (e) {
+                                            console.warn('Backend patch failed:', e);
+                                          }
+                                        }
+                                      }}
+                                    />
+                                    <small style={{ color: '#718096', marginTop: 4 }}>
+                                      {currentYMD ? toDisplayDDMMYYYY(currentYMD) : ''}
+                                    </small>
+                                  </div>
+                                );
+                              })()}
+                            </td>
+                            <td>
+                              {isLocked ? (
+                                <button
+                                  className="edit-btn"
+                                  onClick={() => setEditable(ed => ({ ...ed, [b.buyer]: { ...ed[b.buyer], locked: false } }))}
+                                >
+                                  Edit
+                                </button>
+                              ) : (
+                                <button
+                                  className="save-edit-btn"
+                                  onClick={async () => {
+                                    setEditable(ed => ({ ...ed, [b.buyer]: { ...ed[b.buyer], locked: true } }));
+                                    await updateDoc(doc(db, 'buyers', b.buyer), {
+                                      receivedAmount: editable[b.buyer]?.receivedAmount || '',
+                                      paymentMode: editable[b.buyer]?.paymentMode || '',
+                                      // Save current date from editable (already DD/MM), convert to YMD
+                                      paymentDate: parseDDMMYYYY(editable[b.buyer]?.paymentDate || '')
+                                    });
+                                    if (apiUrl) {
+                                      try {
+                                        await fetch(`${apiUrl.replace(/\/$/, '')}/api/buyers/${encodeURIComponent(b.buyer)}`, {
+                                          method: 'PATCH',
+                                          headers: { 'Content-Type': 'application/json' },
+                                          body: JSON.stringify({
+                                            receivedAmount: editable[b.buyer]?.receivedAmount || '',
+                                            paymentMode: editable[b.buyer]?.paymentMode || '',
+                                            paymentDate: parseDDMMYYYY(editable[b.buyer]?.paymentDate || '')
+                                          })
+                                        });
+                                      } catch (e) {
+                                        console.warn('Backend patch failed:', e);
+                                      }
+                                    }
+                                  }}
+                                >
+                                  Save
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
                   </tbody>
                 </table>
               </div>
